@@ -1,0 +1,25 @@
+# === CMake & Build Artifacts ===
+build/
+CMakeCache.txt
+CMakeFiles/
+CMakeSettings.json
+Makefile
+cmake_install.cmake
+install_manifest.txt
+*.so
+*.a
+
+# === Object Files & Compiled Binaries ===
+*.o
+*.d
+*.out
+
+# === IDEs / Editors Custom Configurations ===
+.vscode/
+.idea/
+*.swp
+*~
+
+# === Operating System Temporary Files & Logs ===
+.DS_Store
+*.log
