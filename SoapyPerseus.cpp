@@ -6,6 +6,7 @@
 #include <thread>
 #include <mutex>
 #include <stdexcept>
+#include <cstdlib>
 
 // Microtelecom 24-bit packed memory mapper layout from perseus_test.c
 typedef union {
@@ -24,6 +25,21 @@ _dev(nullptr), _deviceIndex(0), _frequency(14000000.0), _sampleRate(1000000.0), 
 _dithering(false), _preamp(false), _preselector(true), _streaming(false),
 _head(0), _tail(0), _bufferCount(0), _callbackActiveCount(0)
 {
+
+    // Device arg detection (ex: driver=perseus,gqrx=1)
+    if (args.count("gqrx") != 0 && (args.at("gqrx") == "1" || args.at("gqrx") == "true")) {
+        _gqrxMode = true;
+    }
+    if (args.count("mode") != 0 && args.at("mode") == "gqrx") {
+        _gqrxMode = true;
+    }
+
+    // ENV var detection (ex: SOAPY_PERSEUS_GQRX=1 gqrx)
+    const char* env_gqrx = std::getenv("SOAPY_PERSEUS_GQRX");
+    if (env_gqrx != nullptr && (std::string(env_gqrx) == "1" || std::string(env_gqrx) == "true")) {
+        _gqrxMode = true;
+    }
+
     if (args.count("device_index") != 0) {
         _deviceIndex = std::stoi(args.at("device_index"));
     }
@@ -148,42 +164,11 @@ std::vector<double> SoapyPerseus::listSampleRates(const int direction, const siz
     return {125000.0, 250000.0, 500000.0, 1000000.0, 2000000.0};
 }
 
-
 // === GAIN / ATTENUATOR MANAGEMENT ===
-std::vector<std::string> SoapyPerseus::listGains(const int direction, const size_t channel) const
-{
-    (void)direction; (void)channel;
-    // Expose the official explicit named component required by SDR++ and GQRX
-    return {"ATTENUATION"};
-}
 
 void SoapyPerseus::setGain(const int direction, const size_t channel, const double value)
 {
-    // Forward the global gain slider call straight to our named component handler
     SoapyPerseus::setGain(direction, channel, "ATTENUATION", value);
-}
-
-void SoapyPerseus::setGain(const int direction, const size_t channel, const std::string &name, const double value)
-{
-    if (direction != SOAPY_SDR_RX) return;
-    (void)channel; (void)name;
-    _gain = value;
-
-    if (_dev) {
-        // Secure quantization: clamp and round to the nearest hardware filter boundary
-        int rounded_gain = static_cast<int>(std::round(_gain));
-        int atten_idx = 0;
-        if (rounded_gain >= 30)      atten_idx = 3;
-        else if (rounded_gain >= 20) atten_idx = 2;
-        else if (rounded_gain >= 10) atten_idx = 1;
-        else                         atten_idx = 0;
-
-#ifdef ENABLE_LOGS
-        // Official SoapySDR Logger output for hardware monitoring
-        SoapySDR::logf(SOAPY_SDR_INFO, "[SoapyPerseus] Attenuator slider moved: %d dB requested -> Choosing hardware index: %d", rounded_gain, atten_idx);
-#endif
-        perseus_set_attenuator_n(_dev, atten_idx);
-    }
 }
 
 double SoapyPerseus::getGain(const int direction, const size_t channel) const
@@ -191,28 +176,106 @@ double SoapyPerseus::getGain(const int direction, const size_t channel) const
     return SoapyPerseus::getGain(direction, channel, "ATTENUATION");
 }
 
+std::vector<std::string> SoapyPerseus::listGains(const int direction, const size_t channel) const
+{
+    (void)direction; (void)channel;
+    // Expose 3 independent sliders: 1 real attenuator, 2 virtual binary controls for GQRX
+    if (_gqrxMode) {
+        return {"ATTENUATION", "ADC_DITHER", "ADC_PREAMP"};
+    }
+    return {"ATTENUATION"}; // Sefaut gains management
+}
+
+void SoapyPerseus::setGain(const int direction, const size_t channel, const std::string &name, const double value)
+{
+    if (direction != SOAPY_SDR_RX) return;
+    (void)channel;
+
+    if (_dev) {
+        if (name == "ATTENUATION") {
+            _gain = value;
+            int rounded_gain = static_cast<int>(std::round(_gain));
+            int atten_idx = 0;
+            if (rounded_gain >= 30)      atten_idx = 3;
+            else if (rounded_gain >= 20) atten_idx = 2;
+            else if (rounded_gain >= 10) atten_idx = 1;
+            else                         atten_idx = 0;
+            perseus_set_attenuator_n(_dev, atten_idx);
+        }
+        else if (name == "ADC_DITHER") {
+            _dithering = (value >= 0.5); // 0 = OFF, 1 = ON
+            perseus_set_adc(_dev, _dithering ? 1 : 0, _preamp ? 1 : 0);
+        }
+        else if (name == "ADC_PREAMP") {
+            _preamp = (value >= 0.5); // 0 = OFF, 1 = ON
+            perseus_set_adc(_dev, _dithering ? 1 : 0, _preamp ? 1 : 0);
+        }
+    }
+}
+
 double SoapyPerseus::getGain(const int direction, const size_t channel, const std::string &name) const
 {
-    (void)direction; (void)channel; (void)name;
+    (void)direction; (void)channel;
+    if (name == "ADC_DITHER") return _dithering ? 1.0 : 0.0;
+    if (name == "ADC_PREAMP") return _preamp ? 1.0 : 0.0;
     return _gain;
 }
+
+SoapySDR::Range SoapyPerseus::getGainRange(const int direction, const size_t channel, const std::string &name) const
+{
+    (void)direction; (void)channel;
+    if (name == "ADC_DITHER" || name == "ADC_PREAMP") {
+        // Strict binary slider for GQRX: from 0 to 1, steps of 1
+        return SoapySDR::Range(0.0, 1.0, 1.0);
+    }
+    return SoapySDR::Range(0.0, 30.0, 10.0);
+}
+
 
 SoapySDR::Range SoapyPerseus::getGainRange(const int direction, const size_t channel) const
 {
     return SoapyPerseus::getGainRange(direction, channel, "ATTENUATION");
 }
 
-SoapySDR::Range SoapyPerseus::getGainRange(const int direction, const size_t channel, const std::string &name) const
+// === ANTENNA API (GQRX WIDEBAND MAPPING) ===
+std::vector<std::string> SoapyPerseus::listAntennas(const int direction, const size_t channel) const
 {
-    (void)direction; (void)channel; (void)name;
-    // Strictly map discrete 10dB boundaries: min 0, max 30, step 10
-    return SoapySDR::Range(0.0, 30.0, 10.0);
+    (void)direction; (void)channel;
+    if (_gqrxMode) {
+        return {"Normal (Filters)", "Wideband (Bypass)"};
+    }
+    return {"RX"}; // Antenne standard unique pour SDR++
+}
+
+void SoapyPerseus::setAntenna(const int direction, const size_t channel, const std::string &name)
+{
+    if (direction != SOAPY_SDR_RX) return;
+    (void)channel;
+
+    if (name == "Wideband (Bypass)") {
+        _preselector = false; // WB Mode active (LED ON)
+    } else {
+        _preselector = true;  // Filter active (LED OFF)
+    }
+
+    if (_dev) {
+        perseus_set_ddc_center_freq(_dev, _frequency, _preselector ? 1 : 0);
+    }
+}
+
+std::string SoapyPerseus::getAntenna(const int direction, const size_t channel) const
+{
+    (void)direction; (void)channel;
+    return _preselector ? "Normal (Filters)" : "Wideband (Bypass)";
 }
 
 // === CUSTOM HARDWARE SETTINGS ===
 SoapySDR::ArgInfoList SoapyPerseus::getSettingInfo(void) const
 {
     SoapySDR::ArgInfoList settings;
+    if (_gqrxMode) {
+        return settings; // Liste vide en mode GQRX
+    }
 
     SoapySDR::ArgInfo ditherArg;
     ditherArg.key = "dither"; ditherArg.value = "false"; ditherArg.name = "ADC Dithering";

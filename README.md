@@ -11,6 +11,7 @@ SoapySDR plugin for the **Microtelecom Perseus SDR** receiver. This driver provi
 - **Dedicated Wideband (WB) Mode Toggle**: Allows bypassing the narrow front-end filters and commanding the mechanical relay and front panel LED directly from the software interface.
 - **Component Gain Mapping**: Fully supports the named `"ATTENUATION"` slider component (`0, 10, 20, 30 dB`) to click the hardware attenuation relays and light up the front panel LEDs.
 - **Advanced ADC Settings**: Exposes `ADC Dithering` and `ADC Preamp` options directly through the Custom Hardware Settings panel.
+- **GQRX Compatibility Mode**: Automatically maps hardware switches to virtual antennas and binary gain sliders when requested, avoiding duplicate controls in modern GUIs like SDR++.
 - **Safe Lifecycle Management**: Implements atomic reference safety fences to guarantee quiet and crash-free shutdown sequences (`Ctrl+C` or application closures).
 
 ## Prerequisites
@@ -71,9 +72,20 @@ The terminal should stream continuously showing stable throughput metrics (`~0.9
 ## Application Usage
 
 Once installed, simply open any compatible SDR application like **SDR++** or **GQRX**:
+
+Standard Applications (SDR++, CubicSDR)
+
 1. Select **SoapySDR** or **Soapy** as your source device.
 2. The receiver will be auto-detected with its specific parameters.
 3. Access the **SDR Controls** or **Hardware Settings** tab to check the custom check-boxes for `Wideband Mode`, `ADC Dithering`, and `ADC Preamp`.
+
+GQRX Mode
+
+Because GQRX does not natively display SoapySDR custom settings, you can enable the dedicated compatibility mapping using either method:
+- **Via Device String** (in Configure I/O devices): soapy=0,driver=perseus,gqrx=1
+- **Via Environment Variable**: launch GQRX with SOAPY_PERSEUS_GQRX=1 gqrx
+
+In this mode, the Wideband bypass is controlled via the Antenna selector (Normal (Filters) / Wideband (Bypass)), while ADC_DITHER and ADC_PREAMP appear as binary 0 / 1 sliders alongside ATTENUATION.
 
 ## License
 

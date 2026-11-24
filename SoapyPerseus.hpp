@@ -30,6 +30,11 @@ public:
     SoapySDR::RangeList getFrequencyRange(const int direction, const size_t channel) const override;
     SoapySDR::RangeList getFrequencyRange(const int direction, const size_t channel, const std::string &name) const override;
 
+    // Antenna API (For GQRX Wideband Mode mapping)
+    std::vector<std::string> listAntennas(const int direction, const size_t channel) const override;
+    void setAntenna(const int direction, const size_t channel, const std::string &name) override;
+    std::string getAntenna(const int direction, const size_t channel) const override;
+
     // Sample Rate API
     void setSampleRate(const int direction, const size_t channel, const double rate) override;
     double getSampleRate(const int direction, const size_t channel) const override;
@@ -70,6 +75,7 @@ private:
     bool _dithering;
     bool _preamp;
     bool _preselector;
+    bool _gqrxMode;
     std::atomic<bool> _streaming;
 
     // Ordered atomic streaming variables
