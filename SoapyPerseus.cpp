@@ -8,6 +8,8 @@
 #include <stdexcept>
 #include <cstdlib>
 
+std::atomic<int> SoapyPerseus::s_openDeviceCount(0);
+
 // Microtelecom 24-bit packed memory mapper layout from perseus_test.c
 typedef union {
     struct {
@@ -22,24 +24,9 @@ typedef union {
 
 SoapyPerseus::SoapyPerseus(const SoapySDR::Kwargs &args) :
 _dev(nullptr), _deviceIndex(0), _frequency(14000000.0), _sampleRate(1000000.0), _gain(0.0),
-_dithering(false), _preamp(false), _preselector(true), _streaming(false),
+_dithering(false), _preamp(false), _preselector(true), _gqrxMode(false), _streaming(false),
 _head(0), _tail(0), _bufferCount(0), _callbackActiveCount(0)
 {
-
-    // Device arg detection (ex: driver=perseus,gqrx=1)
-    if (args.count("gqrx") != 0 && (args.at("gqrx") == "1" || args.at("gqrx") == "true")) {
-        _gqrxMode = true;
-    }
-    if (args.count("mode") != 0 && args.at("mode") == "gqrx") {
-        _gqrxMode = true;
-    }
-
-    // ENV var detection (ex: SOAPY_PERSEUS_GQRX=1 gqrx)
-    const char* env_gqrx = std::getenv("SOAPY_PERSEUS_GQRX");
-    if (env_gqrx != nullptr && (std::string(env_gqrx) == "1" || std::string(env_gqrx) == "true")) {
-        _gqrxMode = true;
-    }
-
     if (args.count("device_index") != 0) {
         _deviceIndex = std::stoi(args.at("device_index"));
     }
@@ -47,21 +34,45 @@ _head(0), _tail(0), _bufferCount(0), _callbackActiveCount(0)
         _serial = args.at("serial");
     }
 
-    perseus_exit();
-    perseus_init();
+    // Detect GQRX mode via SoapySDR device arguments
+    if (args.count("gqrx") != 0 && (args.at("gqrx") == "1" || args.at("gqrx") == "true")) {
+        _gqrxMode = true;
+    }
+    if (args.count("mode") != 0 && args.at("mode") == "gqrx") {
+        _gqrxMode = true;
+    }
+
+    // Detect GQRX mode via environment variable
+    const char* env_gqrx = std::getenv("SOAPY_PERSEUS_GQRX");
+    if (env_gqrx != nullptr && (std::string(env_gqrx) == "1" || std::string(env_gqrx) == "true")) {
+        _gqrxMode = true;
+    }
+
+    // Only initialize the global native library if no other instance is currently open
+    if (s_openDeviceCount.fetch_add(1, std::memory_order_acq_rel) == 0) {
+        perseus_exit();
+        perseus_init();
+    }
 
     _dev = perseus_open(_deviceIndex);
     if (!_dev) {
+        if (s_openDeviceCount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            perseus_exit();
+        }
         throw std::runtime_error("Failed to open physical Perseus SDR hardware device");
     }
 
     int err = perseus_firmware_download(_dev, NULL);
     if (err) {
         perseus_close(_dev);
+        if (s_openDeviceCount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            perseus_exit();
+        }
         throw std::runtime_error("Critical failure during Perseus firmware upload sequence");
     }
 
-    _circularBuffer.resize(2 * 1024 * 1024);
+    // Allocate massive 16 Megabytes float ring buffer storage to absorb 2MSps rates
+    _circularBuffer.resize(4 * 1024 * 1024);
     perseus_set_sampling_rate(_dev, static_cast<unsigned int>(_sampleRate));
     perseus_set_adc(_dev, _dithering ? 1 : 0, _preamp ? 1 : 0);
 }
@@ -72,14 +83,17 @@ SoapyPerseus::~SoapyPerseus()
     if (_dev) {
         perseus_stop_async_input(_dev);
 
-        // Wait safely until the native background threads have fully exited
         while (_callbackActiveCount.load(std::memory_order_acquire) > 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
         perseus_close(_dev);
     }
-    perseus_exit();
+
+    // Only release global USB device table when the last instance is closed
+    if (s_openDeviceCount.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        perseus_exit();
+    }
 }
 
 size_t SoapyPerseus::getNumChannels(const int direction) const

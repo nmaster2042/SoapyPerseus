@@ -4,10 +4,29 @@
 #include <perseus-sdr.h>
 #include <cstdio>
 #include <string>
+#include <mutex>
 
 // Function called by SoapySDR to list connected Perseus devices
 std::vector<SoapySDR::Kwargs> findPerseus(const SoapySDR::Kwargs &args)
 {
+    static std::mutex scanMutex;
+    static std::vector<SoapySDR::Kwargs> cachedResults;
+
+    std::lock_guard<std::mutex> lock(scanMutex);
+
+    // CRITICAL FIX: Never call perseus_init() or walk the USB bus while a receiver is open
+    if (SoapyPerseus::s_openDeviceCount.load(std::memory_order_acquire) > 0) {
+        if (!cachedResults.empty()) {
+            return cachedResults;
+        }
+        if (args.count("driver") != 0 && args.at("driver") == "perseus") {
+            SoapySDR::Kwargs devArgs;
+            devArgs["driver"] = "perseus";
+            return {devArgs};
+        }
+        return {};
+    }
+
     std::vector<SoapySDR::Kwargs> results;
 
     // Initialize the native library (returns the number of hardware devices found)
@@ -54,6 +73,9 @@ std::vector<SoapySDR::Kwargs> findPerseus(const SoapySDR::Kwargs &args)
 
     // Always clean up global resources after scanning
     perseus_exit();
+
+    // Update the cache with the fresh scan
+    cachedResults = results;
 
     // Fallback if the user explicitly requests the "perseus" driver
     if (results.empty() && args.count("driver") != 0 && args.at("driver") == "perseus") {

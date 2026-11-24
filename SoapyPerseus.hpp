@@ -16,6 +16,8 @@ public:
     SoapyPerseus(const SoapySDR::Kwargs &args);
     ~SoapyPerseus() override;
 
+    static std::atomic<int> s_openDeviceCount;
+
     // Identification & Channels API
     std::string getDriverKey(void) const override { return "perseus"; }
     std::string getHardwareKey(void) const override { return "PerseusSDR"; }
